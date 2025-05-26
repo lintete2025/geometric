@@ -133,7 +133,15 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\..\sdk\tinyxml\tinystr.cpp" />
+    <ClCompile Include="..\..\..\sdk\tinyxml\tinyxml.cpp" />
+    <ClCompile Include="..\..\..\sdk\tinyxml\tinyxmlerror.cpp" />
+    <ClCompile Include="..\..\..\sdk\tinyxml\tinyxmlparser.cpp" />
     <ClCompile Include="ConsoleApplication1.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\..\sdk\tinyxml\tinystr.h" />
+    <ClInclude Include="..\..\..\sdk\tinyxml\tinyxml.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
