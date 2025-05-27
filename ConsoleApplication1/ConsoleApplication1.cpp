@@ -74,6 +74,9 @@ void printMetaData(const metaData& md);
 void printControlPoint(const controlPoint& cp);
 //轨道拟合
 Matrix orbitFit(metaData data);
+//求瞬时速度和加速度
+Matrix GetSpeed(int t, Matrix A);
+Matrix GetAddSpeed(int t, Matrix A);
 
 
 int main()
@@ -93,6 +96,9 @@ int main()
     printMetaData(data);
     //轨道拟合
     Matrix A = orbitFit(data);
+    //求瞬间速度和加速度
+    Matrix V = GetSpeed(100, A); // 计算t=0时刻的速度
+    Matrix V_add = GetAddSpeed(100, A); // 计算t=0时刻的加速度
 
     //释放内存和关闭数据集
     GDALClose(pDatasetRead);
@@ -312,4 +318,29 @@ Matrix orbitFit(metaData data) {
     A.print();
 
     return A;
+}
+
+Matrix GetSpeed(int t, Matrix A)
+{
+    Matrix V(3, 1); // 速度矩阵代表xyz方向的速度
+    for(int i=0;i<3;i++) // 对于每个方向的速度
+	{
+		V.set(i, 0, A.get(1, i) + 2 * A.get(2, i) * t + 3 * A.get(3, i) * t * t); // 速度公式
+	}
+    cout << "t时刻速度矩阵" << endl;
+    V.print();
+    cout<<"速度合成结果：" << sqrt(V.get(0, 0) * V.get(0, 0) + V.get(1, 0) * V.get(1, 0) + V.get(2, 0) * V.get(2, 0)) << endl; // 输出速度模
+    return V;
+}
+Matrix GetAddSpeed(int t, Matrix A)
+{
+    Matrix V(3, 1); // 速度矩阵代表xyz方向的速度
+    for (int i = 0; i < 3; i++) // 对于每个方向的速度
+    {
+        V.set(i, 0, 2 * A.get(2, i) + 6 * A.get(3, i) * t); // 速度公式
+    }
+    cout << "t时刻加速度矩阵" << endl;
+    V.print();
+    cout << "加速度合成结果：" << sqrt(V.get(0, 0) * V.get(0, 0) + V.get(1, 0) * V.get(1, 0) + V.get(2, 0) * V.get(2, 0)) << endl; // 输出速度模
+    return V;
 }
