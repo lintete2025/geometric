@@ -14,12 +14,13 @@
 #include "tinystr.h"
 #include "tinyxml.h"
 #include <cstdlib> // 包含atoi函数的头文件
+#include "matrix.h"
 using namespace std;
 //控制点信息
 struct controlPoint
 {
     //获取时间
-    string time;
+    int time;
     //x坐标
     double x;
     //y坐标
@@ -63,7 +64,7 @@ struct metaData
     //侧视方向
     double lookDirection;
     //成像开始时间
-    string startTime; 
+    int startTime; 
 };
 //读入影像数据，输出影像长宽以及格式信息
 GDALDataset* Read_image(GDALDataset* pDatasetRead, char* filename);
@@ -71,7 +72,8 @@ metaData Read_xml(char* filename);
 //用于打印元数据的函数
 void printMetaData(const metaData& md);
 void printControlPoint(const controlPoint& cp);
-
+//轨道拟合
+Matrix orbitFit(metaData data);
 
 
 int main()
@@ -87,9 +89,11 @@ int main()
     pDatasetRead = Read_image(pDatasetRead, filename);
     //读取影像数据
     metaData data = Read_xml(xmlfilename);
-
+    //输出元数据
     printMetaData(data);
-   
+    //轨道拟合
+    Matrix A = orbitFit(data);
+
     //释放内存和关闭数据集
     GDALClose(pDatasetRead);
 
@@ -175,7 +179,8 @@ metaData Read_xml(char* filename) {
     for (TiXmlElement* stateVec = orbit->FirstChildElement("stateVec"); stateVec != nullptr; stateVec = stateVec->NextSiblingElement("stateVec")) {
         controlPoint cp;
         // 读取子节点
-        cp.time = stateVec->FirstChildElement("timeUTC")->GetText();
+        const char* time = stateVec->FirstChildElement("timeGPS")->GetText();
+        cp.time = atoi(time);  // 获取时间
         const char* posX = stateVec->FirstChildElement("posX")->GetText();
         cp.x = atof(posX);
         const char* posY = stateVec->FirstChildElement("posY")->GetText();
@@ -220,7 +225,6 @@ metaData Read_xml(char* filename) {
     data.rsf = atof(commonRSFValue); // rsf
     return data;
 }
-
 void printMetaData(const metaData& md) {
     cout << "Rows: " << md.rows << endl;
     cout << "Cols: " << md.cols << endl;
@@ -250,4 +254,62 @@ void printControlPoint(const controlPoint& cp) {
     cout << "Vx: " << cp.vx << endl;
     cout << "Vy: " << cp.vy << endl;
     cout << "Vz: " << cp.vz << endl;
+}
+Matrix orbitFit(metaData data) {
+    Matrix T(data.controlPointsNum, 4); // T 矩阵
+    Matrix A(4, 3); // 待求系数矩阵4行对应4个系数，3列对应x、y、z坐标
+    Matrix Ax(4, 1); // Ax 矩阵
+    Matrix Ay(4, 1); // Ay 矩阵
+    Matrix Az(4, 1); // Az 矩阵
+    for (int i = 0; i < data.controlPointsNum; i++) {
+        cout << data.controlPoints[i].time - data.controlPoints[0].time << endl; // 输出时间差
+        T.set(i, 0, 1.0); // 第一列为1
+        T.set(i, 1, data.controlPoints[i].time - data.controlPoints[0].time); // 第二列为时间
+        T.set(i, 2, (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time)); // 第三列为x坐标
+        T.set(i, 3, (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time)); // 第四列为y坐标
+    }
+    cout << "T矩阵" << endl;
+    T.print();
+    Matrix X(data.controlPointsNum, 1); // X矩阵
+    for (int i = 0; i < data.controlPointsNum; i++) {
+        X.set(i, 0, data.controlPoints[i].x); // 设置X矩阵的值为控制点的x坐标
+    }
+    Ax = (T.t() * T).inv() * T.t() * X;
+    cout << "A-x" << endl;
+    Ax.print(); 
+    Matrix L(data.controlPointsNum, 1);//残差值
+    L = T * Ax - X; 
+    cout << "残差-x" << endl;
+    L.print(); 
+    for (int i = 0; i < 4; i++) {
+        A.set(i, 0, Ax.get(i, 0)); // 将Ax矩阵的值赋给A矩阵
+    }
+    for (int i = 0; i < data.controlPointsNum; i++) {
+		X.set(i, 0, data.controlPoints[i].y); // 设置X矩阵的值为控制点的y坐标
+	}
+    Ay = (T.t() * T).inv() * T.t() * X;
+    cout << "A-y" << endl;
+    Ay.print();
+    L = T * Ay - X;
+    cout << "残差-y" << endl;
+    L.print();
+    for (int i = 0; i < 4; i++) {
+		A.set(i, 1, Ay.get(i, 0)); // 将Ay矩阵的值赋给A矩阵
+	}
+    for (int i = 0; i < data.controlPointsNum; i++) {
+        X.set(i, 0, data.controlPoints[i].z); // 设置X矩阵的值为控制点的z坐标
+        }
+    Az = (T.t() * T).inv() * T.t() * X;
+    cout << "A-z" << endl;
+    Az.print();
+    L = T * Az - X;
+    cout << "残差-z" << endl;
+    L.print();
+    for (int i = 0; i < 4; i++) {
+		A.set(i, 2, Az.get(i, 0)); // 将Az矩阵的值赋给A矩阵
+	}
+    cout << "A矩阵" << endl;
+    A.print();
+
+    return A;
 }

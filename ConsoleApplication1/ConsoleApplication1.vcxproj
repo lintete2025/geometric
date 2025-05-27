@@ -142,6 +142,7 @@
   <ItemGroup>
     <ClInclude Include="..\..\..\sdk\tinyxml\tinystr.h" />
     <ClInclude Include="..\..\..\sdk\tinyxml\tinyxml.h" />
+    <ClInclude Include="matrix.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
