@@ -65,6 +65,9 @@ struct metaData
     double lookDirection;
     //成像开始时间
     int startTime; 
+    // 影像角点坐标
+    vector<double> Lat; 
+    vector<double> Lon; 
 };
 //读入影像数据，输出影像长宽以及格式信息
 GDALDataset* Read_image(GDALDataset* pDatasetRead, char* filename);
@@ -77,19 +80,26 @@ Matrix orbitFit(metaData data);
 //求瞬时速度和加速度
 Matrix GetSpeed(int t, Matrix A);
 Matrix GetAddSpeed(int t, Matrix A);
+//坐标转换
+vector<Matrix> toXYZ(GDALDataset* pDatasetDEM, double dem_pixel, double lat0, double lon0);
+//几何校正
+void GeoCorrection(GDALDataset* pDatasetReadImg, vector<Matrix> dem);
 
 
 int main()
 {
     GDALAllRegister(); //注册GDAL库中的所有驱动程序
-    GDALDataset* pDatasetRead{};
+    GDALDataset* pDatasetReadImg{};
+    GDALDataset* pDatasetDEM{};
     GDALDataset* pDatasetSave;
     GDALDriver* pDriver;
     //char filename[200] = "data/imagery_HH.tif";
-    char filename[200] = "data/t-intesnsity.tif";
+    char Imgfilename[200] = "data/t-intensity.tif";
+    char DEMfilename[200] = "data/dem_r.tif";
     char xmlfilename[200] = "data/TSX1_SAR__SSC______SM_S_SRA_20121208T162059_20121208T162107.xml";
-
-    pDatasetRead = Read_image(pDatasetRead, filename);
+    double dem_pixel = 4.63e-5;//加密后的像元大小（单位为度）
+    //读入影像
+    pDatasetReadImg = Read_image(pDatasetReadImg, Imgfilename);
     //读取影像数据
     metaData data = Read_xml(xmlfilename);
     //输出元数据
@@ -99,9 +109,14 @@ int main()
     //求瞬间速度和加速度
     Matrix V = GetSpeed(100, A); // 计算t=0时刻的速度
     Matrix V_add = GetAddSpeed(100, A); // 计算t=0时刻的加速度
+    //将DEM转为地心坐标
+    pDatasetDEM = Read_image(pDatasetDEM, DEMfilename);//读入DEM数据
+    double lat0 = 19.800139; // DEM左上角纬度:来自裁剪参数
+    double lon0 = -155.700139; // DEM左上角经度
+    vector<Matrix> DEMxyz = toXYZ(pDatasetDEM, dem_pixel, lat0, lon0); // 转换为地心坐标系
 
     //释放内存和关闭数据集
-    GDALClose(pDatasetRead);
+    GDALClose(pDatasetReadImg);
 
 }
 
@@ -116,6 +131,9 @@ GDALDataset* Read_image(GDALDataset* pDatasetRead, char* filename) {
     int lHeight = pDatasetRead->GetRasterYSize();
     int nBands = pDatasetRead->GetRasterCount();
     GDALDataType datatype = pDatasetRead->GetRasterBand(1)->GetRasterDataType();
+    cout << "--------------------------" << endl;
+    cout << "成功打开文件：" << endl;
+    cout << "File: " << filename << endl;
     cout << "width: " << lWidth << endl;
     cout << "height: " << lHeight << endl;
     cout << "Bands: " << nBands << endl;
@@ -229,26 +247,46 @@ metaData Read_xml(char* filename) {
     TiXmlElement* commonRSF = complexImageInfo->FirstChildElement("commonRSF");
     const char* commonRSFValue = commonRSF->GetText();
     data.rsf = atof(commonRSFValue); // rsf
+
+    // 遍历所有 sceneCornerCoord 节点
+    for (TiXmlElement* corner = sceneInfo->FirstChildElement("sceneCornerCoord");
+        corner != nullptr;
+        corner = corner->NextSiblingElement("sceneCornerCoord")) {
+
+
+        // 提取纬度和经度
+        double lat = atof(corner->FirstChildElement("lat")->GetText());
+        data.Lat.push_back(lat); // 存储纬度
+        double lon = atof(corner->FirstChildElement("lon")->GetText());
+        data.Lon.push_back(lon); // 存储经度
+
+    }
+
     return data;
 }
-void printMetaData(const metaData& md) {
-    cout << "Rows: " << md.rows << endl;
-    cout << "Cols: " << md.cols << endl;
-    cout << "Control Points Num: " << md.controlPointsNum << endl;
-    cout << "Range Looks: " << md.rangeLooks << endl;
-    cout << "Row Spacing: " << md.rowspasing << endl;
-    cout << "Azimuth Resolution: " << md.azimuthRes << endl;
-    cout << "Center Frequency: " << md.centerFrequency << endl;
-    cout << "PRF: " << md.prf << endl;
-    cout << "RSF: " << md.rsf << endl;
-    cout << "Near Range: " << md.nearRange << endl;
-    cout << "Orbit Direction: " << md.orbitDirection << endl;
-    cout << "Look Direction: " << md.lookDirection << endl;
-    cout << "Start Time: " << md.startTime << endl;
+void printMetaData(const metaData& meta) {
+    cout << "Rows: " << meta.rows << endl;
+    cout << "Cols: " << meta.cols << endl;
+    cout << "Control Points Num: " << meta.controlPointsNum << endl;
+    cout << "Range Looks: " << meta.rangeLooks << endl;
+    cout << "Row Spacing: " << meta.rowspasing << endl;
+    cout << "Azimuth Resolution: " << meta.azimuthRes << endl;
+    cout << "Center Frequency: " << meta.centerFrequency << endl;
+    cout << "PRF: " << meta.prf << endl;
+    cout << "RSF: " << meta.rsf << endl;
+    cout << "Near Range: " << meta.nearRange << endl;
+    cout << "Orbit Direction: " << meta.orbitDirection << endl;
+    cout << "Look Direction: " << meta.lookDirection << endl;
+    cout << "Start Time: " << meta.startTime << endl;
 
     cout << "Control Points:" << endl;
-    for (const auto& cp : md.controlPoints) {
+    for (const auto& cp : meta.controlPoints) {
         printControlPoint(cp);
+        cout << "------------------------" << endl;
+    }
+    cout << "sceneCornerCoord:" << endl;
+    for (int i = 0; i < 4;i++) {
+        cout << meta.Lat[i]<<"\t"<<meta.Lon[i] << endl;
         cout << "------------------------" << endl;
     }
 }
@@ -343,4 +381,48 @@ Matrix GetAddSpeed(int t, Matrix A)
     V.print();
     cout << "加速度合成结果：" << sqrt(V.get(0, 0) * V.get(0, 0) + V.get(1, 0) * V.get(1, 0) + V.get(2, 0) * V.get(2, 0)) << endl; // 输出速度模
     return V;
+}
+vector<Matrix> toXYZ(GDALDataset* pDatasetDEM, double dem_pixel, double lat0, double lon0) {
+    vector<Matrix> result;//存储顺序为X、Y、Z
+    Matrix X(pDatasetDEM->GetRasterYSize(), pDatasetDEM->GetRasterXSize()); // X坐标矩阵
+    Matrix Y(pDatasetDEM->GetRasterYSize(), pDatasetDEM->GetRasterXSize()); // Y坐标矩阵
+    Matrix Z(pDatasetDEM->GetRasterYSize(), pDatasetDEM->GetRasterXSize()); // Z坐标矩阵
+    //DEM行列数读取
+    int rows = pDatasetDEM->GetRasterYSize();
+    int cols = pDatasetDEM->GetRasterXSize();
+    //逐像素处理
+    double lat = 0, lon = 0;
+    for (int i = 0; i < rows; i++) {
+		for (int j = 0; j < cols; j++) {
+            //初始化
+            double x = 0;
+            double y = 0;
+            double z = 0;
+			//获取DEM像素值
+			pDatasetDEM->GetRasterBand(1)->RasterIO(GF_Read, j, i, 1, 1, &z, 1, 1, GDT_Float64, 0, 0);
+			//计算经纬度
+			lat = lat0 + (i * dem_pixel); // 假设lat0为左上角纬度
+			lon = lon0 + (j * dem_pixel); // 假设lon0为左上角经度
+            // 椭球信息
+            double a = 6378137.0; // 长半轴
+            double b = 6356752.3142; // 短半轴
+            double e2 = (a * a - b * b) / (a * a); // 第一偏心率平方
+            // 将经纬度转换为弧度
+            double lat_rad = lat * M_PI / 180.0; // 纬度转换为弧度
+            double lon_rad = lon * M_PI / 180.0; // 经度转换为弧度
+            // 计算地心坐标系的X、Y、Z坐标
+            double N = a / sqrt(1 - e2 * sin(lat_rad) * sin(lat_rad)); // 卯酉圈半径
+            x = (N + z) * cos(lat_rad) * cos(lon_rad); // 经度作为X坐标
+            y = (N + z) * cos(lat_rad) * sin(lon_rad); // 纬度作为Y坐标
+            z = ((1 - e2) * N + z) * sin(lat_rad); // 高程作为Z坐标
+			//将经纬度转换为地心坐标系
+			X.set(i, j, x); // 经度作为X坐标
+			Y.set(i, j, y); // 纬度作为Y坐标
+			Z.set(i, j, z); // 高程作为Z坐标
+		}
+	}
+	result.push_back(X);
+	result.push_back(Y);
+	result.push_back(Z);
+	return result; // 返回地心坐标系的X、Y、Z矩阵
 }
