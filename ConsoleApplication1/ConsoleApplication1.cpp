@@ -20,7 +20,7 @@ using namespace std;
 struct controlPoint
 {
     //获取时间
-    int time;
+    double time;
     //x坐标
     double x;
     //y坐标
@@ -64,7 +64,9 @@ struct metaData
     //侧视方向
     double lookDirection;
     //成像开始时间
-    int startTime; 
+    double startTime; 
+    //成像结束时间
+    double endTime;
     // 影像角点坐标
     vector<double> Lat; 
     vector<double> Lon; 
@@ -77,13 +79,14 @@ void printMetaData(const metaData& md);
 void printControlPoint(const controlPoint& cp);
 //轨道拟合
 Matrix orbitFit(metaData data);
-//求瞬时速度和加速度
+//求瞬时位置、速度和加速度
+Matrix GetPosition(int t, Matrix A);
 Matrix GetSpeed(int t, Matrix A);
 Matrix GetAddSpeed(int t, Matrix A);
 //坐标转换
 vector<Matrix> toXYZ(GDALDataset* pDatasetDEM, double dem_pixel, double lat0, double lon0);
 //几何校正
-void GeoCorrection(GDALDataset* pDatasetReadImg, vector<Matrix> dem);
+void GeoCorrection(GDALDataset* pDatasetReadImg, vector<Matrix> dem, metaData meta, Matrix A);
 
 
 int main()
@@ -95,9 +98,9 @@ int main()
     GDALDriver* pDriver;
     //char filename[200] = "data/imagery_HH.tif";
     char Imgfilename[200] = "data/t-intensity.tif";
-    char DEMfilename[200] = "data/dem_r.tif";
+    char DEMfilename[200] = "data/dem_r3.tif";
     char xmlfilename[200] = "data/TSX1_SAR__SSC______SM_S_SRA_20121208T162059_20121208T162107.xml";
-    double dem_pixel = 4.63e-5;//加密后的像元大小（单位为度）
+    double dem_pixel = 5e-5;//加密后的像元大小（单位为度）
     //读入影像
     pDatasetReadImg = Read_image(pDatasetReadImg, Imgfilename);
     //读取影像数据
@@ -106,20 +109,19 @@ int main()
     printMetaData(data);
     //轨道拟合
     Matrix A = orbitFit(data);
-    //求瞬间速度和加速度
-    Matrix V = GetSpeed(100, A); // 计算t=0时刻的速度
-    Matrix V_add = GetAddSpeed(100, A); // 计算t=0时刻的加速度
     //将DEM转为地心坐标
     pDatasetDEM = Read_image(pDatasetDEM, DEMfilename);//读入DEM数据
-    double lat0 = 19.800139; // DEM左上角纬度:来自裁剪参数
-    double lon0 = -155.700139; // DEM左上角经度
+    double lat0 = 19.6640277778; // DEM左上角纬度:来自裁剪参数
+    double lon0 = -155.425138889; // DEM左上角经度
     vector<Matrix> DEMxyz = toXYZ(pDatasetDEM, dem_pixel, lat0, lon0); // 转换为地心坐标系
+    cout<<"开始几何校正..."<<endl;
+    //几何校正
+    GeoCorrection(pDatasetReadImg, DEMxyz, data, A);
 
     //释放内存和关闭数据集
     GDALClose(pDatasetReadImg);
 
 }
-
 
 GDALDataset* Read_image(GDALDataset* pDatasetRead, char* filename) {
     pDatasetRead = (GDALDataset*)GDALOpen(filename, GA_ReadOnly);
@@ -165,7 +167,19 @@ metaData Read_xml(char* filename) {
     TiXmlElement* rangeTime = sceneInfo->FirstChildElement("rangeTime");
     TiXmlElement* firstPixel = rangeTime->FirstChildElement("firstPixel");
     const char* firstPixelValue = firstPixel->GetText();
-    data.nearRange = atoi(firstPixelValue);  // 获取成像最近距离
+    data.nearRange = atof(firstPixelValue);  // 获取成像最近距离
+    TiXmlElement* start = sceneInfo->FirstChildElement("start");
+    TiXmlElement* startTime = start->FirstChildElement("timeGPS");
+    const char* startTimeValue = startTime->GetText();
+    TiXmlElement* startTimeF = start->FirstChildElement("timeGPSFraction");
+    const char* startTimeFValue = startTimeF->GetText();
+    data.startTime = atof(startTimeValue) + atof(startTimeFValue);  // 获取成像开始时间
+    TiXmlElement* stop = sceneInfo->FirstChildElement("stop");
+    TiXmlElement* stopTime = stop->FirstChildElement("timeGPS");
+    const char* stopTimeValue = stopTime->GetText();
+    TiXmlElement* stopTimeF = stop->FirstChildElement("timeGPSFraction");
+    const char* stopTimeFValue = stopTimeF->GetText();
+    data.endTime = atof(stopTimeValue) + atof(stopTimeFValue);  // 获取成像结束时间
     TiXmlElement* missionInfo = productInfo->FirstChildElement("missionInfo");
     TiXmlElement* orbitDirection = missionInfo->FirstChildElement("orbitDirection");
     const char* orbitDirectionValue = orbitDirection->GetText();
@@ -174,7 +188,7 @@ metaData Read_xml(char* filename) {
 	} else if (strcmp(orbitDirectionValue, "DESCENDING") == 0) {
 		data.orbitDirection = -1.0;  // 降轨
 	} else {
-		std::cerr << "Unknown orbit direction: " << orbitDirectionValue << std::endl;
+		cerr << "Unknown orbit direction: " << orbitDirectionValue << std::endl;
 		return data;
 	}
     TiXmlElement* acquisitionInfo = productInfo->FirstChildElement("acquisitionInfo");
@@ -278,6 +292,7 @@ void printMetaData(const metaData& meta) {
     cout << "Orbit Direction: " << meta.orbitDirection << endl;
     cout << "Look Direction: " << meta.lookDirection << endl;
     cout << "Start Time: " << meta.startTime << endl;
+    cout << "End Time: " << meta.endTime << endl;
 
     cout << "Control Points:" << endl;
     for (const auto& cp : meta.controlPoints) {
@@ -309,8 +324,8 @@ Matrix orbitFit(metaData data) {
         cout << data.controlPoints[i].time - data.controlPoints[0].time << endl; // 输出时间差
         T.set(i, 0, 1.0); // 第一列为1
         T.set(i, 1, data.controlPoints[i].time - data.controlPoints[0].time); // 第二列为时间
-        T.set(i, 2, (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time)); // 第三列为x坐标
-        T.set(i, 3, (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time)); // 第四列为y坐标
+        T.set(i, 2, (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time)); 
+        T.set(i, 3, (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time) * (data.controlPoints[i].time - data.controlPoints[0].time)); 
     }
     cout << "T矩阵" << endl;
     T.print();
@@ -357,29 +372,30 @@ Matrix orbitFit(metaData data) {
 
     return A;
 }
-
-Matrix GetSpeed(int t, Matrix A)
+Matrix GetPosition(double t, Matrix A) {
+    Matrix P(1, 3); // 位置矩阵代表xyz方向的位置
+    for (int i = 0; i < 3; i++){ // 对于每个方向的位置
+        //cout<<"时间：" << t << endl; // 输出时间
+		P.set(0, i, A.get(0, i) + A.get(1, i) * t + A.get(2, i) * t * t + A.get(3, i) * t * t * t); // 位置公式
+	}
+    return P; // 返回位置矩阵
+}
+Matrix GetSpeed(double t, Matrix A)
 {
     Matrix V(3, 1); // 速度矩阵代表xyz方向的速度
     for(int i=0;i<3;i++) // 对于每个方向的速度
 	{
 		V.set(i, 0, A.get(1, i) + 2 * A.get(2, i) * t + 3 * A.get(3, i) * t * t); // 速度公式
 	}
-    cout << "t时刻速度矩阵" << endl;
-    V.print();
-    cout<<"速度合成结果：" << sqrt(V.get(0, 0) * V.get(0, 0) + V.get(1, 0) * V.get(1, 0) + V.get(2, 0) * V.get(2, 0)) << endl; // 输出速度模
     return V;
 }
-Matrix GetAddSpeed(int t, Matrix A)
+Matrix GetAddSpeed(double t, Matrix A)
 {
-    Matrix V(3, 1); // 速度矩阵代表xyz方向的速度
-    for (int i = 0; i < 3; i++) // 对于每个方向的速度
+    Matrix V(3, 1); 
+    for (int i = 0; i < 3; i++) 
     {
-        V.set(i, 0, 2 * A.get(2, i) + 6 * A.get(3, i) * t); // 速度公式
+        V.set(i, 0, 2 * A.get(2, i) + 6 * A.get(3, i) * t); // 加速度公式
     }
-    cout << "t时刻加速度矩阵" << endl;
-    V.print();
-    cout << "加速度合成结果：" << sqrt(V.get(0, 0) * V.get(0, 0) + V.get(1, 0) * V.get(1, 0) + V.get(2, 0) * V.get(2, 0)) << endl; // 输出速度模
     return V;
 }
 vector<Matrix> toXYZ(GDALDataset* pDatasetDEM, double dem_pixel, double lat0, double lon0) {
@@ -398,23 +414,25 @@ vector<Matrix> toXYZ(GDALDataset* pDatasetDEM, double dem_pixel, double lat0, do
             double x = 0;
             double y = 0;
             double z = 0;
+            double h = 0;
 			//获取DEM像素值
-			pDatasetDEM->GetRasterBand(1)->RasterIO(GF_Read, j, i, 1, 1, &z, 1, 1, GDT_Float64, 0, 0);
+			pDatasetDEM->GetRasterBand(1)->RasterIO(GF_Read, j, i, 1, 1, &h, 1, 1, GDT_Float64, 0, 0);
 			//计算经纬度
-			lat = lat0 + (i * dem_pixel); // 假设lat0为左上角纬度
-			lon = lon0 + (j * dem_pixel); // 假设lon0为左上角经度
+			lat = lat0 - (i * dem_pixel); // lat0为左上角纬度
+			lon = lon0 + (j * dem_pixel); // lon0为左上角经度
             // 椭球信息
-            double a = 6378137.0; // 长半轴
-            double b = 6356752.3142; // 短半轴
+            double a = 6378137; // 长半轴
+            double b = 6356752.3141; // 短半轴
+
             double e2 = (a * a - b * b) / (a * a); // 第一偏心率平方
             // 将经纬度转换为弧度
-            double lat_rad = lat * M_PI / 180.0; // 纬度转换为弧度
-            double lon_rad = lon * M_PI / 180.0; // 经度转换为弧度
+            double lat_rad = lat * M_PI / 180.0; 
+            double lon_rad = lon * M_PI / 180.0; 
             // 计算地心坐标系的X、Y、Z坐标
             double N = a / sqrt(1 - e2 * sin(lat_rad) * sin(lat_rad)); // 卯酉圈半径
-            x = (N + z) * cos(lat_rad) * cos(lon_rad); // 经度作为X坐标
-            y = (N + z) * cos(lat_rad) * sin(lon_rad); // 纬度作为Y坐标
-            z = ((1 - e2) * N + z) * sin(lat_rad); // 高程作为Z坐标
+            x = (N + h) * cos(lat_rad) * cos(lon_rad); // 经度作为X坐标
+            y = (N + h) * cos(lat_rad) * sin(lon_rad); // 纬度作为Y坐标
+            z = ((1 - e2) * N + h) * sin(lat_rad); // 高程作为Z坐标
 			//将经纬度转换为地心坐标系
 			X.set(i, j, x); // 经度作为X坐标
 			Y.set(i, j, y); // 纬度作为Y坐标
@@ -425,4 +443,74 @@ vector<Matrix> toXYZ(GDALDataset* pDatasetDEM, double dem_pixel, double lat0, do
 	result.push_back(Y);
 	result.push_back(Z);
 	return result; // 返回地心坐标系的X、Y、Z矩阵
+}
+void GeoCorrection(GDALDataset* pDatasetReadImg, vector<Matrix> dem, metaData meta, Matrix A) {
+    GDALRasterBand* pRasterBand = pDatasetReadImg->GetRasterBand(1);
+    double* buffer = new double[pRasterBand->GetYSize() * pRasterBand->GetXSize()];
+    pRasterBand->RasterIO(GF_Read, 0, 0, pRasterBand->GetXSize(), pRasterBand->GetYSize(), buffer, pRasterBand->GetXSize(), pRasterBand->GetYSize(), GDT_Float64, 0, 0);
+    double t_s = meta.startTime - meta.controlPoints[0].time; // 成像开始时间
+    double t_e = meta.endTime - meta.controlPoints[0].time; // 成像结束时间
+    vector<float> geocorrect(dem[0].cols * dem[0].rows);
+    //逐点遍历DEM
+    for (int i = 0; i < dem[0].rows; i++) {
+        for (int j = 0; j < dem[0].cols; j++) {
+            double t = (t_s + t_e) / 2; // 取成像时间的中点作为方位向时间初始值
+            double tt = 999.0; // 时间改正数初始化
+            double k = 1e-13; // 时间改正数的阈值
+            int m = 0; // 行索引初始化
+            //获取DEM的坐标Rp
+			Matrix Rp(1,3); 
+            Rp.set(0, 0, dem[0].get(i, j)); // X坐标
+            Rp.set(0, 1, dem[1].get(i, j)); // Y坐标
+            Rp.set(0, 2, dem[2].get(i, j)); // Z坐标
+            while (abs(tt) > k && m<5) {
+                // 获取卫星位置Rs
+                Matrix Rs = GetPosition(t, A); // 获取t0时刻的卫星位置
+                //Rs.print(); // 打印卫星位置
+                // 获取卫星速度Vs
+                Matrix Vs = GetSpeed(t, A); // 获取t0时刻的卫星速度
+                //Vs.print(); // 打印卫星速度
+                // 获取卫星加速度As
+                Matrix As = GetAddSpeed(t, A); // 获取t0时刻的卫星加速度
+                //As.print(); // 打印卫星加速度
+                // 计算时间改正数
+                Matrix dR = Rs - Rp;
+                double a = -(dR.get(0, 0) * Vs.get(0, 0) + dR.get(0, 1) * Vs.get(1, 0) + dR.get(0, 2) * Vs.get(2, 0));
+                double b = (dR.get(0, 0) * As.get(0, 0) + dR.get(0, 1) * As.get(1, 0) + dR.get(0, 2) * As.get(2, 0) + Vs.get(0, 0) * Vs.get(0, 0) + Vs.get(1, 0) * Vs.get(1, 0) + Vs.get(2, 0) * Vs.get(2, 0));
+                tt = a / b;
+                t += tt;
+                m++;
+            }
+            //cout<<"迭代次数: " << m << ", 时间改正数: " << tt <<"时间"<<t << endl; // 输出迭代次数和时间改正数
+
+            double ii = (t - t_s) * meta.prf; // 行号
+            Matrix Rs = GetPosition(t, A); // 获取t时刻的卫星位置
+            Matrix r = Rs - Rp; // 计算卫星位置与DEM点的距离
+            double R = sqrt(r.get(0, 0) * r.get(0, 0) + r.get(0, 1) * r.get(0, 1) + r.get(0, 2) * r.get(0, 2)); // 计算距离模
+            double t_range = 2*R / 299792458.0; // 计算距离向时间
+			double jj = (t_range - meta.nearRange) * meta.rsf; // 列号
+            //cout << "行号: " << ii << ", 列号: " << jj << endl;
+            //灰度重采样
+            if(ii<0 || (int)ii >= pDatasetReadImg->GetRasterYSize() || jj < 0 || (int)jj >= pDatasetReadImg->GetRasterXSize()) {
+				//cout << "坐标超出范围" << endl;
+                geocorrect[i * dem[0].cols + j] = 0;
+				continue; // 如果行列号超出范围，则跳过该点
+			}
+			//获取影像像素值
+            double pixelValue = buffer[(int)ii * pRasterBand->GetXSize() + (int)jj];
+            geocorrect[i * dem[0].cols + j] = pixelValue;
+			//输出结果
+            //cout << pixelValue << endl;
+			
+        }
+        cout<< "第" << i + 1 << "行处理完成" << endl; // 输出处理进度
+    }
+    GDALDriver* pDriver = GetGDALDriverManager()->GetDriverByName("GTIFF");
+    char** papszOptions = pDriver->GetMetadata();
+    GDALDataset* pDatasetSave = pDriver->Create("data/aaaaaaa.tif", dem[0].cols, dem[0].rows, 1, GDT_Float32, papszOptions);
+    //将图像数据写入到新的数据集中
+    if (pDatasetSave->RasterIO(GF_Write, 0, 0, dem[0].cols, dem[0].rows, geocorrect.data(), dem[0].cols, dem[0].rows, GDT_Float32, 1, NULL, 0, 0, 0) != CE_None) {
+        cout << "tif写入失败" << endl;
+        GDALClose(pDatasetSave);
+    }
 }
